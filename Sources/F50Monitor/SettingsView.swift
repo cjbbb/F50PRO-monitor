@@ -1,0 +1,212 @@
+import SwiftUI
+import F50Core
+
+public struct SettingsView: View {
+    @ObservedObject var fetcher: F50Fetcher
+    var onClose: () -> Void
+    
+    @State private var tempIP: String = ""
+    @State private var tempPassword: String = ""
+    @State private var isPasswordVisible: Bool = false
+    @State private var tempInterval: Double = 2.0
+    @State private var tempDisplayMode: MenuBarDisplayMode = .dailyUsage
+    @StateObject private var launchAtLogin = LaunchAtLoginManager()
+
+    private var isIPValid: Bool {
+        F50Configuration.isValidAddress(tempIP)
+    }
+    
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button(action: onClose) {
+                    Label("返回", systemImage: "chevron.left")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(F50Theme.blue)
+
+                Spacer()
+
+                Text("设置")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+
+                Spacer()
+
+                Color.clear
+                    .frame(width: 48, height: 1)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("登录时自动启动")
+                        .font(.system(size: 12, weight: .semibold))
+
+                    Spacer()
+
+                    Toggle("", isOn: Binding(
+                        get: { launchAtLogin.isEnabled },
+                        set: { launchAtLogin.setEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(launchAtLogin.isUpdating)
+                }
+
+                if launchAtLogin.requiresApproval {
+                    HStack(spacing: 4) {
+                        Text("需要在系统设置中允许")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Button("前往设置") {
+                            launchAtLogin.openSystemSettings()
+                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 10))
+                    }
+                } else if let errorMessage = launchAtLogin.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(F50Theme.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("连接设置")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+
+                // 1. 设备 IP / 域名
+                HStack {
+                    Text("设备 IP / 域名")
+                        .font(.system(size: 12, weight: .semibold))
+                        .fixedSize()
+                    Spacer(minLength: 12)
+                    TextField("192.168.0.1 或域名", text: $tempIP)
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .font(.system(size: 12))
+                        .frame(width: 170)
+                }
+
+                if !tempIP.isEmpty && !isIPValid {
+                    Text("请输入正确的 IP 地址或域名（例如 192.168.0.1 或 f50.example.com）")
+                        .font(.system(size: 10))
+                        .foregroundColor(F50Theme.red)
+                }
+
+                // 2. 中兴后台口令
+                HStack {
+                    Text("中兴后台口令")
+                        .font(.system(size: 12, weight: .semibold))
+                        .fixedSize()
+                    Spacer(minLength: 12)
+                    HStack(spacing: 4) {
+                        if isPasswordVisible {
+                            TextField("例如 admin", text: $tempPassword)
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .font(.system(size: 12))
+                        } else {
+                            SecureField("例如 admin", text: $tempPassword)
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .font(.system(size: 12))
+                        }
+
+                        Button {
+                            isPasswordVisible.toggle()
+                        } label: {
+                            Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .frame(width: 170)
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("刷新与显示（节能优化）")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    Text("自动刷新频率")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Picker("", selection: $tempInterval) {
+                        Text("1 秒").tag(1.0)
+                        Text("3 秒（推荐节能）").tag(3.0)
+                        Text("5 秒（极简降温）").tag(5.0)
+                        Text("10 秒（超低负载）").tag(10.0)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+
+                HStack {
+                    Text("菜单栏显示模式")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Picker("", selection: $tempDisplayMode) {
+                        ForEach(MenuBarDisplayMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .onChange(of: tempDisplayMode) { newMode in
+                        fetcher.displayMode = newMode
+                    }
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+
+            HStack {
+                Button("使用默认值") {
+                    tempIP = "192.168.0.1"
+                    tempPassword = F50Configuration.defaultCredential
+                    tempInterval = F50Configuration.defaultRefreshInterval
+                    tempDisplayMode = .dailyUsage
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("保存") {
+                    let finalURL = F50Configuration.normalizeBaseURL(tempIP)
+                    fetcher.applyConfiguration(
+                        baseURL: finalURL,
+                        password: tempPassword,
+                        refreshInterval: tempInterval,
+                        displayMode: tempDisplayMode
+                    )
+                    onClose()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(F50Theme.blue)
+                .disabled(!isIPValid)
+            }
+        }
+        .padding(16)
+        .frame(width: 380)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            tempIP = F50Configuration.displayAddress(from: fetcher.baseURLString)
+            tempPassword = fetcher.password
+            tempInterval = fetcher.refreshInterval
+            tempDisplayMode = fetcher.displayMode
+            launchAtLogin.refresh()
+        }
+    }
+}

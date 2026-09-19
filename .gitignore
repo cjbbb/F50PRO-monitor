@@ -1,0 +1,12 @@
+# Swift / SPM
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Apps & Archives
+*.app/
+*.zip
+*.dmg
+dist/
