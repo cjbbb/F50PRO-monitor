@@ -12,6 +12,11 @@ public struct SettingsView: View {
     @State private var tempDisplayMode: MenuBarDisplayMode = .dailyUsage
     @StateObject private var launchAtLogin = LaunchAtLoginManager()
 
+    /// 取自 App 包的 Info.plist；用 swift run 直接运行（无 .app 包）时没有版本号
+    private var appVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String).map { "v\($0)" } ?? "开发版"
+    }
+
     private var isIPValid: Bool {
         F50Configuration.isValidAddress(tempIP)
     }
@@ -171,6 +176,16 @@ public struct SettingsView: View {
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+
+            HStack {
+                Text("F50 Monitor \(appVersion)")
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundColor(.secondary)
+                Spacer()
+                Link("GitHub", destination: URL(string: "https://github.com/machao2024/F50PRO-monitor")!)
+                    .font(.system(size: 10))
+            }
+            .padding(.horizontal, 2)
 
             HStack {
                 Button("使用默认值") {
