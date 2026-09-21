@@ -94,8 +94,9 @@ F50 Pro 的网页后台不提供这两项指标，面板默认显示 `--`。
 | 项目 | 说明 |
 | --- | --- |
 | 只读接口 | `GET /goform/goform_get_cmd_process`，携带 `Referer` 即可匿名读取 |
-| 登录 | `LD` 挑战值 + `SHA256(SHA256(密码) + LD)`（大写） |
-| 写操作鉴权 | 需携带 `AD = SHA256(SHA256(wa_inner_version + cr_version) + RD)`（大写） |
+| 登录 | `LD` 挑战值 + `SHA256(SHA256(密码) + LD)`。固件的 SHA256 输出**大写**十六进制，内层摘要必须以大写参与拼接 |
+| 写操作鉴权 | 需携带 `AD = SHA256(SHA256(wa_inner_version + cr_version) + RD)`，大小写规则同上 |
+| 登录锁定 | 连续 5 次登录失败会锁定账户 300 秒（`psw_fail_num_str` 为剩余次数，`login_lock_time` 为剩余秒数）。应用在口令被拒后不再重试，且剩余次数 < 3 或已锁定时不尝试登录 |
 | 移动数据开关 | `goformId=CONNECT_NETWORK` / `DISCONNECT_NETWORK`，状态取自 `ppp_status` |
 | 套餐总量 | 键名带 `flux_` 前缀：`flux_data_volume_limit_size`（如 `50_1024` = 50 GB） |
 | 清零日 | `flux_clear_date`；仅当 `flux_auto_clear_flow_data_switch` 不为 `off` 时才视为有效 |
