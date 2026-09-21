@@ -614,15 +614,43 @@ final class F50ResponseParserTests: XCTestCase {
         }
     }
 
-    func testAuthADUsesDoubleSHA256OfVersionsAndRD() {
-        // SHA256("WA1CR2") = 0c51…，再与 RD 拼接后二次哈希并转大写
-        let ad = F50ResponseParser.authAD(waInnerVersion: "WA1", crVersion: "CR2", rd: "abc123")
-        let inner = SHA256.hash(data: Data("WA1CR2".utf8)).map { String(format: "%02x", $0) }.joined()
-        let expected = SHA256.hash(data: Data((inner + "abc123").utf8))
-            .map { String(format: "%02X", $0) }.joined()
-        XCTAssertEqual(ad, expected)
-        XCTAssertEqual(ad.count, 64)
-        XCTAssertEqual(ad, ad.uppercased())
+    // 以下两个向量由 F50 Pro B22 固件自带的 js/util.js（SHA256 输出大写十六进制）在 node 中生成。
+    // 内层哈希必须保持大写再拼接，否则路由器会判为密码错误，几次后锁定账户。
+    func testLoginPasswordHashMatchesRouterFirmwareVector() {
+        XCTAssertEqual(
+            F50ResponseParser.loginPasswordHash(password: "admin", ld: "A1B2C3D4E5F6"),
+            "46D47EC11BDFAF8241C5A2AD5B5A13718A10B2CED7AD10ED391F77BCB34A4A15"
+        )
+    }
+
+    func testAuthADMatchesRouterFirmwareVector() {
+        XCTAssertEqual(
+            F50ResponseParser.authAD(
+                waInnerVersion: "F50ProV1.0.0B22",
+                crVersion: "MU3356V1.0.0B22",
+                rd: "1sck80ax2cuc37yr8bf50otdc"
+            ),
+            "0E4721FDDFD7441E6669DB527D4631559B009B1ACD10228C2B5DD154CB2B9164"
+        )
+    }
+
+    func testLoginResultParsing() {
+        // result 为字符串："0"/"4" 成功；"1" 失败、"2" 重复登录、"3" 密码错误
+        XCTAssertTrue(F50ResponseParser.isLoginSuccess(Data(#"{"result":"0"}"#.utf8)))
+        XCTAssertTrue(F50ResponseParser.isLoginSuccess(Data(#"{"result":"4"}"#.utf8)))
+        XCTAssertTrue(F50ResponseParser.isLoginSuccess(Data(#"{"result":0}"#.utf8)))
+        XCTAssertFalse(F50ResponseParser.isLoginSuccess(Data(#"{"result":"3"}"#.utf8)))
+        XCTAssertFalse(F50ResponseParser.isLoginSuccess(Data(#"{"result":"1"}"#.utf8)))
+        XCTAssertFalse(F50ResponseParser.isLoginSuccess(Data()))
+    }
+
+    func testLoginIsOnlyAttemptedWithAmpleRemainingTries() {
+        // psw_fail_num_str 是「剩余可尝试次数」，login_lock_time 是锁定剩余秒数
+        XCTAssertTrue(F50ResponseParser.isLoginAttemptSafe(["psw_fail_num_str": "5", "login_lock_time": "0"]))
+        XCTAssertTrue(F50ResponseParser.isLoginAttemptSafe(["psw_fail_num_str": "", "login_lock_time": ""]))
+        XCTAssertFalse(F50ResponseParser.isLoginAttemptSafe(["psw_fail_num_str": "2", "login_lock_time": "0"]))
+        XCTAssertFalse(F50ResponseParser.isLoginAttemptSafe(["psw_fail_num_str": "0", "login_lock_time": "247"]))
+        XCTAssertFalse(F50ResponseParser.isLoginAttemptSafe(["psw_fail_num_str": "5", "login_lock_time": "120"]))
     }
 
     func testMobileDataRequestBody() {

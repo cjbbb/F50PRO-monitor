@@ -278,9 +278,36 @@ enum F50ResponseParser {
         return ""
     }
 
-    /// ZTE goform 写操作鉴权参数：SHA256(SHA256(wa_inner_version + cr_version) + RD)，大写
+    // 固件 js/util.js 里的 SHA256 输出「大写」十六进制，且内层结果原样（大写）参与外层拼接。
+    // 内层若用小写，算出的哈希不同：登录会被判为密码错误并消耗尝试次数，几次后账户被锁定。
+    private static func routerSHA256(_ text: String) -> String {
+        sha256Hex(text).uppercased()
+    }
+
+    /// 登录口令哈希：SHA256(SHA256(密码) + LD)
+    static func loginPasswordHash(password: String, ld: String) -> String {
+        routerSHA256(routerSHA256(password) + ld)
+    }
+
+    /// goform 写操作鉴权参数：SHA256(SHA256(wa_inner_version + cr_version) + RD)
     static func authAD(waInnerVersion: String, crVersion: String, rd: String) -> String {
-        sha256Hex(sha256Hex(waInnerVersion + crVersion).lowercased() + rd).uppercased()
+        routerSHA256(routerSHA256(waInnerVersion + crVersion) + rd)
+    }
+
+    /// LOGIN 响应的 result（字符串）："0" / "4" 成功；"1" 失败、"2" 重复登录、"3" 密码错误
+    static func isLoginSuccess(_ data: Data) -> Bool {
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = dict["result"] else { return false }
+        return ["0", "4"].contains(String(describing: result))
+    }
+
+    /// 登录失败会消耗路由器的剩余尝试次数（psw_fail_num_str），耗尽后账户锁定 login_lock_time 秒。
+    /// 仅在未锁定且剩余次数充裕（≥3）时才允许应用尝试登录，给用户自己在网页端登录留足余量。
+    static func isLoginAttemptSafe(_ dict: [String: Any]) -> Bool {
+        let remainingText = String(describing: dict["psw_fail_num_str"] ?? "").trimmingCharacters(in: .whitespaces)
+        let remaining = remainingText.isEmpty ? 5 : parseInt(remainingText)
+        let lockSeconds = parseInt(dict["login_lock_time"] ?? 0)
+        return remaining >= 3 && lockSeconds == 0
     }
 
     /// 移动数据开关请求体（与 ZTE 后台 service.js 的 CONNECT_NETWORK / DISCONNECT_NETWORK 一致）

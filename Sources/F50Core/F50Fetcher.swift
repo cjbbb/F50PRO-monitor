@@ -1,6 +1,5 @@
 import Foundation
 import Combine
-import CryptoKit
 import os
 
 final class F50NetworkDelegate: NSObject, URLSessionDelegate {
@@ -28,7 +27,7 @@ public enum F50MobileDataError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .missingPassword: return "请在设置中填写路由器管理密码"
-        case .loginFailed: return "登录路由器失败，请检查管理密码"
+        case .loginFailed: return "登录路由器失败，请检查管理密码（为避免锁定账户，修改密码前不会自动重试）"
         case .requestFailed: return "切换移动数据失败，请稍后重试"
         }
     }
@@ -605,11 +604,21 @@ public class F50Fetcher: ObservableObject {
         )
     }
 
-    /// 新式登录：LD 挑战值 + SHA256(SHA256(pwd) + LD) 大写
+    /// 当前口令已被路由器拒绝：在口令 / 地址变更前不再尝试登录，避免把账户刷到锁定。
+    private var isLoginRejected = false
+
+    /// 登录：LD 挑战值 + 口令哈希。失败的登录会消耗路由器的尝试次数，所以这里宁可不登也不盲目重试。
     private func login(routerBaseURL: String) async -> Bool {
         sessionCookie = nil
-        guard !password.isEmpty,
-              let ld = (try? await routerJSON(
+        guard !password.isEmpty, !isLoginRejected else { return false }
+
+        guard let lockState = try? await routerCommands("psw_fail_num_str,login_lock_time", routerBaseURL: routerBaseURL),
+              F50ResponseParser.isLoginAttemptSafe(lockState) else {
+            appendLog("错误", "路由器登录已锁定或剩余尝试次数不足，跳过登录")
+            return false
+        }
+
+        guard let ld = (try? await routerJSON(
                 routerBaseURL: routerBaseURL,
                 path: "/goform/goform_get_cmd_process?isTest=false&cmd=LD"
               ))?["LD"] as? String, !ld.isEmpty,
@@ -619,18 +628,21 @@ public class F50Fetcher: ObservableObject {
                 timeout: 4.0
               ) else { return false }
 
-        let passwordHash = sha256(sha256(password) + ld).uppercased()
+        let passwordHash = F50ResponseParser.loginPasswordHash(password: password, ld: ld)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("goformId=LOGIN&isTest=false&user=admin&password=\(passwordHash)".utf8)
+        request.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("isTest=false&goformId=LOGIN&password=\(passwordHash)".utf8)
 
         guard let (data, response) = try? await session.data(for: request) else { return false }
+        guard F50ResponseParser.isLoginSuccess(data) else {
+            isLoginRejected = true
+            appendLog("错误", "路由器拒绝了登录口令；修改口令前不再重试")
+            return false
+        }
         if let setCookie = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Set-Cookie") {
             sessionCookie = setCookie.components(separatedBy: ";").first ?? setCookie
-            return true
         }
-        let result = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["result"] as? Int
-        return result == 0 || result == 3
+        return true
     }
 
     /// 写操作鉴权参数 AD：SHA256(SHA256(wa_inner_version + cr_version) + RD)
@@ -734,6 +746,7 @@ public class F50Fetcher: ObservableObject {
         smsMessages = []
         smsErrorMessage = nil
         sessionCookie = nil
+        isLoginRejected = false
         status.clearHardwareMetrics()
         // 避免新配置下短暂显示旧设备的流量
         status.monthlyRx = 0
@@ -1005,8 +1018,4 @@ public class F50Fetcher: ObservableObject {
         F50ResponseParser.parseUInt64(val)
     }
 
-    private func sha256(_ str: String) -> String {
-        let digest = SHA256.hash(data: Data(str.utf8))
-        return digest.compactMap { String(format: "%02x", $0) }.joined()
-    }
 }
