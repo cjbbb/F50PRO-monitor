@@ -383,6 +383,7 @@ final class F50ResponseParserTests: XCTestCase {
         components.hour = 12
         components.minute = 30
         components.second = 45
+        components.timeZone = TimeZone(secondsFromGMT: 8 * 3600)
         guard let timeZone = TimeZone(secondsFromGMT: 8 * 3600),
               let date = calendar.date(from: components) else {
             XCTFail("Date construction failed")
@@ -402,6 +403,7 @@ final class F50ResponseParserTests: XCTestCase {
         components.hour = 12
         components.minute = 30
         components.second = 45
+        components.timeZone = TimeZone(secondsFromGMT: 8 * 3600)
         guard let timeZone = TimeZone(secondsFromGMT: 8 * 3600),
               let date = calendar.date(from: components) else {
             XCTFail("Date construction failed")
