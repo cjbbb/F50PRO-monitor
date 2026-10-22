@@ -21,8 +21,8 @@
 - **菜单栏常驻**：默认显示当日已用流量；可在设置中切换为实时速率、套餐用量、温度、Wi-Fi 设备数或仅图标
 - **网络与信号**：运营商、网络制式（5G SA / NSA / 4G LTE）、频段、信号格，RSRP / SINR / RSRQ 及质量评级
 - **漫游状态**：未漫游 / 国内漫游 / 国际漫游，以及路由器上数据漫游开关的状态
-- **移动数据开关**：在面板上直接断开 / 连接蜂窝数据
-- **网络模式快捷切换**：面板提供「仅 4G / 自动 5G」，「更多」中可选 5G SA、5G NSA；复用原厂后台，无需 root。选中状态以设备回读配置为准
+- **移动数据开关**：在面板上直接断开 / 连接蜂窝数据（需填写路由器管理密码）
+- **网络模式快捷切换**：面板提供「仅 4G / 自动 5G」，「更多」中可选 5G SA、5G NSA；选中状态以设备回读配置为准
 - **套餐流量**：读取路由器后台设置的套餐总量，显示已用、剩余、进度条；
   固定流量包（路由器「自动清零」关闭）不会显示误导性的「N 天后重置」
 - **当日流量 / 累计已用**：固件没有当日计数器，应用以本地基线计算当日用量；Mac 跨零点睡眠也不会漏算夜间用量
@@ -61,14 +61,15 @@ cd F50PRO-monitor
 
 ./build.sh          # 编译 release、打包、安装到 /Applications 并启动
 ./build.sh --dmg    # 只打包为 dist/F50-Monitor-<版本>-arm64.dmg，不安装
-swift test          # 运行单元测试（需要带 XCTest 的完整 Xcode）
+swift test          # 运行单元测试
 ```
 
 ## 使用
 
-1. 首次启动时填写设备地址（默认 `192.168.0.1`）和路由器管理密码；设备地址可在设置中修改。
+1. 首次启动会弹出初始设置：填写设备地址（默认 `192.168.0.1`）和**路由器管理密码**（即登录路由器网页后台的密码）。
 2. 点击菜单栏图标打开面板；底部按钮依次为：打开后台、短信、设置、退出。
-3. 登录密码保存在本机钥匙串（Keychain）；后续切换网络模式、开关移动数据和发送短信时会自动登录，无需重复输入。
+3. 不填密码也能查看大部分状态（路由器的只读接口允许匿名读取）；**移动数据开关、发送短信**等写操作必须填写密码。
+4. 密码保存在本机钥匙串（Keychain），不会写入配置文件或上传到任何地方。
 
 > ⚠️ 如果这台 Mac 本身就通过 F50 Pro 上网，关闭「移动数据」后 Mac 会断网——路由器局域网仍然可达，在面板上重新打开即可。
 
@@ -87,9 +88,9 @@ swift test          # 运行单元测试（需要带 XCTest 的完整 Xcode）
 F50 Pro 的网页后台不提供这两项指标，面板默认显示 `--`。
 按 [ADB 指南](docs/ADB_AND_FLASHING_GUIDE.md) 开启设备的 ADB 调试（5555 端口）后，应用会自动通过 ADB 读取并显示，无需额外配置。
 
-## 适配说明（F50 Pro · 固件 B22 / B28）
+## 适配说明（F50 Pro · 固件 B22）
 
-原有监控和移动数据开关针对 B22 实测；网络模式接口与参数来自 B28 原厂后台脚本，尚未完成真机切换验证。
+以下是针对该固件实测得到、与上游项目假设不同的地方：
 
 | 项目 | 说明 |
 | --- | --- |
@@ -98,7 +99,7 @@ F50 Pro 的网页后台不提供这两项指标，面板默认显示 `--`。
 | 写操作鉴权 | 需携带 `AD = SHA256(SHA256(wa_inner_version + cr_version) + RD)`，大小写规则同上 |
 | 登录锁定 | 连续 5 次登录失败会锁定账户 300 秒（`psw_fail_num_str` 为剩余次数，`login_lock_time` 为剩余秒数）。应用在口令被拒后不再重试，且剩余次数 < 3 或已锁定时不尝试登录 |
 | 移动数据开关 | `goformId=CONNECT_NETWORK` / `DISCONNECT_NETWORK`，状态取自 `ppp_status` |
-| 网络模式（B28 后台脚本确认） | `goformId=SET_BEARER_PREFERENCE`，`BearerPreference`：`Only_LTE`（仅 4G）、`WL_AND_5G`（自动 5G/4G/3G）、`Only_5G`（5G SA）、`LTE_AND_5G`（5G NSA）；回读 `network_net_select`。需管理员登录与 AD，无需 root；切换可能短暂断网，自动模式允许回落 4G/3G |
+| 网络模式 | `goformId=SET_BEARER_PREFERENCE`，`BearerPreference`：`Only_LTE`（仅 4G）、`WL_AND_5G`（自动 5G/4G/3G）、`Only_5G`（5G SA）、`LTE_AND_5G`（5G NSA）；回读 `network_net_select`，接口与参数参照 B28 原厂后台脚本 |
 | 套餐总量 | 键名带 `flux_` 前缀：`flux_data_volume_limit_size`（如 `50_1024` = 50 GB） |
 | 清零日 | `flux_clear_date`；仅当 `flux_auto_clear_flow_data_switch` 不为 `off` 时才视为有效 |
 | 漫游 | `network_simcard_roam`：`Home` / `Internal` / `International`；开关为 `roam_setting_option` |
