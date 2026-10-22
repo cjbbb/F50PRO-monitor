@@ -38,9 +38,9 @@ jobs:
 
           ## 更新内容
 
-          - 实时速率改为双行显示，上行红点、下行蓝点，方便同时查看。
-          - 缩小菜单栏图标与文字，精简流量、设备数等显示，减少占用宽度。
-          - 关闭面板弹出动画，点击后直接显示。
+          - 网络模式切换会回读设备状态确认结果，避免丢失响应时重复提交。
+          - 切换网络期间忽略过期轮询结果，避免旧状态覆盖新网络与频段信息。
+          - 修正跨日时把上一会话流量计入当日用量的问题。
 
           SHA-256：
           \`\`\`text
@@ -49,6 +49,6 @@ jobs:
           EOF
 
           gh release create "v${version}" "$dmg_path" "${dmg_path}.sha256" \
-            --title "F50 Monitor v${version} — 双行速率与紧凑菜单栏" \
+            --title "F50 Monitor v${version} — 网络切换与流量统计修正" \
             --notes-file "$notes_path" \
             --verify-tag

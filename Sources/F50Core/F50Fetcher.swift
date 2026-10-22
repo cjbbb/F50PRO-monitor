@@ -117,6 +117,7 @@ public class F50Fetcher: ObservableObject {
      public private(set) var isFetching = false
     private var sessionCookie: String? = nil
     private var requestGeneration: UInt = 0
+    private var networkStateRevision: UInt = 0
     private var isFetchingExtensions = false
     private var isApplyingConfiguration = false
     private var lastTrafficRefreshDate = Date.distantPast
@@ -295,9 +296,10 @@ public class F50Fetcher: ObservableObject {
         guard !isFetching else { return }
         isFetching = true
         let generation = requestGeneration
+        let networkRevision = networkStateRevision
         let refreshTraffic = Date().timeIntervalSince(lastTrafficRefreshDate)
             >= F50Configuration.trafficRefreshInterval
-        Task { await refresh(generation: generation, refreshTraffic: refreshTraffic) }
+        Task { await refresh(generation: generation, networkRevision: networkRevision, refreshTraffic: refreshTraffic) }
     }
 
     public func fetchDataAsync() async {
@@ -435,7 +437,7 @@ public class F50Fetcher: ObservableObject {
         }) {
         case .success: break
         case .loginFailed: throw F50MobileDataError.loginFailed
-        case .failed: throw F50MobileDataError.requestFailed
+        case .failed, .uncertain: throw F50MobileDataError.requestFailed
         }
         appendLog("连接", "已请求\(enabled ? "开启" : "关闭")移动数据")
 
@@ -462,13 +464,15 @@ public class F50Fetcher: ObservableObject {
         let generation = requestGeneration
         let routerBaseURL = routerURLString
         isSwitchingNetworkMode = true
+        // 切换前发出的状态请求不能再更新界面。
+        networkStateRevision &+= 1
         defer { isSwitchingNetworkMode = false }
         let result = await postGoform(generation: generation, body: {
             F50ResponseParser.buildNetworkModeRequestBody(mode: mode, ad: $0)
         })
         guard generation == requestGeneration else { throw CancellationError() }
         switch result {
-        case .success: break
+        case .success, .uncertain: break
         case .loginFailed: throw F50MobileDataError.loginFailed
         case .failed: throw F50NetworkModeError.requestFailed
         }
@@ -478,9 +482,13 @@ public class F50Fetcher: ObservableObject {
             guard generation == requestGeneration else { throw CancellationError() }
             if let payload = try? await routerCommands("network_net_select", routerBaseURL: routerBaseURL),
                generation == requestGeneration {
-                networkMode = F50ResponseParser.parseNetworkMode(payload)
-                if networkMode == mode {
+                let confirmedMode = F50ResponseParser.parseNetworkMode(payload)
+                networkMode = confirmedMode
+                if confirmedMode == mode {
+                    // 也丢弃切换过程中发出的轮询，重新读取稳定后的状态。
+                    networkStateRevision &+= 1
                     await fetchDataAsync()
+                    guard generation == requestGeneration else { throw CancellationError() }
                     return
                 }
             }
@@ -626,7 +634,11 @@ public class F50Fetcher: ObservableObject {
     }
 
     private enum GoformWriteResult {
-        case success, loginFailed, failed
+        case success, loginFailed, failed, uncertain
+    }
+
+    private enum GoformAttemptResult {
+        case success, unauthorized, failed, uncertain
     }
 
     private var routerHost: String {
@@ -670,9 +682,24 @@ public class F50Fetcher: ObservableObject {
 
     /// 当前口令已被路由器拒绝：在口令 / 地址变更前不再尝试登录，避免把账户刷到锁定。
     private var isLoginRejected = false
+    private var loginTask: Task<Bool, Never>?
 
     /// 登录：LD 挑战值 + 口令哈希。失败的登录会消耗路由器的尝试次数，所以这里宁可不登也不盲目重试。
     private func login(routerBaseURL: String, generation: UInt) async -> Bool {
+        guard generation == requestGeneration else { return false }
+        if let loginTask {
+            let result = await loginTask.value
+            return generation == requestGeneration && result
+        }
+        let task = Task { await performLogin(routerBaseURL: routerBaseURL, generation: generation) }
+        loginTask = task
+        let result = await task.value
+        guard generation == requestGeneration else { return false }
+        loginTask = nil
+        return result
+    }
+
+    private func performLogin(routerBaseURL: String, generation: UInt) async -> Bool {
         guard generation == requestGeneration else { return false }
         sessionCookie = nil
         guard !password.isEmpty, !isLoginRejected else { return false }
@@ -715,51 +742,76 @@ public class F50Fetcher: ObservableObject {
     }
 
     /// 写操作鉴权参数 AD：SHA256(SHA256(wa_inner_version + cr_version) + RD)
-    private func fetchAuthAD(routerBaseURL: String) async -> String? {
-        guard let versions = try? await routerCommands("Language,cr_version,wa_inner_version", routerBaseURL: routerBaseURL),
-              let rd = (try? await routerJSON(
-                routerBaseURL: routerBaseURL,
-                path: "/goform/goform_get_cmd_process?cmd=RD&isTest=false"
-              ))?["RD"] as? String else { return nil }
+    private func fetchAuthAD(routerBaseURL: String) async throws -> String {
+        let versions = try await routerCommands("Language,cr_version,wa_inner_version", routerBaseURL: routerBaseURL)
+        let challenge = try await routerJSON(
+            routerBaseURL: routerBaseURL,
+            path: "/goform/goform_get_cmd_process?cmd=RD&isTest=false"
+        )
+        guard let rd = challenge["RD"] as? String, !rd.isEmpty else { throw RouterError.badResponse }
         let wa = (versions["wa_inner_version"] as? String) ?? (versions["wa_version"] as? String) ?? ""
         let cr = (versions["cr_version"] as? String) ?? ""
         return F50ResponseParser.authAD(waInnerVersion: wa, crVersion: cr, rd: rd)
     }
 
-    /// goform 写操作：取 AD → POST。先复用现有会话；未登录或会话过期时登录后重试一次。
+    /// 仅在明确未认证时重新登录。写请求丢失响应时结果未知，不能直接重发。
     private func postGoform(
         generation: UInt,
         isSuccess: @escaping (Data) -> Bool = F50ResponseParser.isGoformSetSuccess,
         body: @escaping (_ ad: String) -> String
     ) async -> GoformWriteResult {
         let routerBaseURL = routerURLString
-        func attempt() async -> Bool {
+        func attempt() async -> GoformAttemptResult {
+            guard generation == requestGeneration else { return .failed }
+            let ad: String
+            do {
+                ad = try await fetchAuthAD(routerBaseURL: routerBaseURL)
+            } catch RouterError.unauthorized {
+                return .unauthorized
+            } catch {
+                return .failed
+            }
             guard generation == requestGeneration,
-                  let ad = await fetchAuthAD(routerBaseURL: routerBaseURL),
-                  generation == requestGeneration,
                   var request = try? routerRequest(
                     routerBaseURL: routerBaseURL,
                     path: "/goform/goform_set_cmd_process",
                     timeout: 5.0
-                  ) else { return false }
+                  ) else { return .failed }
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data(body(ad).utf8)
             guard let (data, response) = try? await session.data(for: request),
                   generation == requestGeneration,
-                  (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
-            return isSuccess(data)
+                  let http = response as? HTTPURLResponse else { return .uncertain }
+            if http.statusCode == 401 || http.statusCode == 403 { return .unauthorized }
+            guard http.statusCode == 200 else { return .uncertain }
+            if isSuccess(data) { return .success }
+            guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .uncertain
+            }
+            if let error = payload["Error"] as? String, !error.isEmpty { return .unauthorized }
+            return payload["result"] == nil ? .uncertain : .failed
         }
 
-        if sessionCookie != nil, await attempt() { return .success }
-        guard generation == requestGeneration,
-              await login(routerBaseURL: routerBaseURL, generation: generation) else { return .loginFailed }
-        return await attempt() ? .success : .failed
+        guard generation == requestGeneration else { return .failed }
+        if sessionCookie == nil {
+            guard await login(routerBaseURL: routerBaseURL, generation: generation) else { return .loginFailed }
+        }
+        var result = await attempt()
+        if result == .unauthorized {
+            guard await login(routerBaseURL: routerBaseURL, generation: generation) else { return .loginFailed }
+            result = await attempt()
+        }
+        switch result {
+        case .success: return .success
+        case .uncertain: return .uncertain
+        case .failed, .unauthorized: return .failed
+        }
     }
 
     // MARK: - 状态刷新（80 Router 为主，5555 ADB 补充硬件指标）
 
-    private func refresh(generation: UInt, refreshTraffic: Bool) async {
+    private func refresh(generation: UInt, networkRevision: UInt, refreshTraffic: Bool) async {
         let routerBaseURL = routerURLString
         // 信号指标（nr_rsrp/nr_rsrq/Nr_snr）由 network_information 的 dump 提供：
         // F50 固件若在列表中显式请求这四个命令，会把 dump 对应字段清零（返回空串），
@@ -775,18 +827,31 @@ public class F50Fetcher: ObservableObject {
             do {
                 dict = try await routerCommands(cmdList, routerBaseURL: routerBaseURL)
             } catch RouterError.unauthorized(let message) {
+                guard generation == requestGeneration, networkRevision == networkStateRevision else {
+                    throw RouterError.unauthorized(message)
+                }
                 guard await login(routerBaseURL: routerBaseURL, generation: generation) else {
                     throw RouterError.unauthorized(message)
                 }
                 dict = try await routerCommands(cmdList, routerBaseURL: routerBaseURL)
             }
         } catch {
+            if generation == requestGeneration, networkRevision != networkStateRevision {
+                isFetching = false
+                fetchData()
+                return
+            }
             updateStatusFailed(error.localizedDescription, generation: generation)
             return
         }
 
         guard generation == requestGeneration else { return }
-        networkMode = F50ResponseParser.parseNetworkMode(dict)
+        guard networkRevision == networkStateRevision else {
+            isFetching = false
+            fetchData()
+            return
+        }
+        if !isSwitchingNetworkMode { networkMode = F50ResponseParser.parseNetworkMode(dict) }
         parseStatusDict(dict, refreshTraffic: refreshTraffic)
         if refreshTraffic {
             lastTrafficRefreshDate = Date()
@@ -797,17 +862,19 @@ public class F50Fetcher: ObservableObject {
         guard !isFetchingExtensions else { return }
         isFetchingExtensions = true
         defer { isFetchingExtensions = false }
-        async let bands: Void = refreshBands(routerBaseURL: routerBaseURL, generation: generation)
+        async let bands: Void = refreshBands(routerBaseURL: routerBaseURL, generation: generation, networkRevision: networkRevision)
         await applyADBMetrics(host: routerHost, primaryPayload: dict, generation: generation)
         await bands
     }
 
     /// 频段需单独请求：与主状态列表合并请求会让部分固件把 dump 字段清零
-    private func refreshBands(routerBaseURL: String, generation: UInt) async {
+    private func refreshBands(routerBaseURL: String, generation: UInt, networkRevision: UInt) async {
+        let networkType = status.networkType
         let cmdList = "network_type,wan_active_band,lte_band,lte_ca_pcell_band,nr5g_action_band,nr5g_action_nsa_band,ZCELLINFO_band,Z5g_CELLINFO_band,nr_ca_pcell_band"
         guard let payload = try? await routerCommands(cmdList, routerBaseURL: routerBaseURL, timeout: 3.0),
-              generation == requestGeneration else { return }
-        let bands = F50ResponseParser.parseCurrentBands(from: payload, networkType: status.networkType)
+              generation == requestGeneration, networkRevision == networkStateRevision,
+              networkType == status.networkType else { return }
+        let bands = F50ResponseParser.parseCurrentBands(from: payload, networkType: networkType)
         if !bands.isEmpty {
             status.currentBands = bands
         }
@@ -822,6 +889,8 @@ public class F50Fetcher: ObservableObject {
         smsMessages = []
         smsErrorMessage = nil
         sessionCookie = nil
+        loginTask?.cancel()
+        loginTask = nil
         isLoginRejected = false
         status.clearHardwareMetrics()
         // 避免新配置下短暂显示旧设备的流量
@@ -952,7 +1021,7 @@ public class F50Fetcher: ObservableObject {
         }
         newStatus.networkType = parsedType
         let currentBands = F50ResponseParser.parseCurrentBands(from: dict, networkType: parsedType)
-        newStatus.currentBands = currentBands.isEmpty ? status.currentBands : currentBands
+        newStatus.currentBands = currentBands.isEmpty && parsedType == status.networkType ? status.currentBands : currentBands
 
         // 3 Signal Metrics: RSRP, RSRQ, SINR/SNR
         // firstValidSignalValue 会跳过 null/"0"/无效值继续尝试下一个候选键，
@@ -1016,10 +1085,7 @@ public class F50Fetcher: ObservableObject {
                 newStatus.dailyTx = parseUInt64(val)
             }
 
-            newStatus.trackedDaily = updateDailyTrafficTracking(
-                currentMonthlyTotal: newStatus.monthlyTotal,
-                currentSessionTotal: newStatus.sessionTotal
-            )
+            newStatus.trackedDaily = updateDailyTrafficTracking(currentMonthlyTotal: newStatus.monthlyTotal)
             newStatus.trafficLimit = F50ResponseParser.parseTrafficLimit(from: dict)
             applyDetectedTrafficResetDay(from: dict)
             updateEffectiveTrafficResetDay()
@@ -1040,7 +1106,7 @@ public class F50Fetcher: ObservableObject {
         self.status = newStatus
     }
 
-    private func updateDailyTrafficTracking(currentMonthlyTotal: UInt64, currentSessionTotal: UInt64) -> UInt64 {
+    private func updateDailyTrafficTracking(currentMonthlyTotal: UInt64) -> UInt64 {
         let defaults = UserDefaults.standard
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
@@ -1079,7 +1145,7 @@ public class F50Fetcher: ObservableObject {
             calculatedDaily = 0
         }
 
-        return max(calculatedDaily, currentSessionTotal)
+        return calculatedDaily
     }
 
     private func parseInt(_ val: Any) -> Int {

@@ -190,6 +190,17 @@ final class F50ResponseParserTests: XCTestCase {
         XCTAssertEqual(status.dailyTotal, 500)
     }
 
+    func testDailyTotalExcludesSessionTrafficAcrossMidnight() {
+        var status = F50Status()
+        status.realtimeRx = 100_000
+        status.trackedDaily = 1024
+        XCTAssertEqual(status.dailyTotal, 1024)
+        status.trackedDaily = 0
+        XCTAssertEqual(status.dailyTotal, 0)
+        status.dailyRx = 500
+        XCTAssertEqual(status.dailyTotal, 500)
+    }
+
     func testExtractsResetDayFromDayKeysUsedByZTERouter() {
         XCTAssertEqual(F50ResponseParser.extractFirstValidResetDay(from: ["data_volume_clear_day": "16"]), 16)
         XCTAssertEqual(F50ResponseParser.extractFirstValidResetDay(from: ["monthly_clear_day": "1"]), 1)

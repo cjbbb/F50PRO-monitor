@@ -121,7 +121,7 @@ public struct F50Status: Equatable, Codable {
     /// 当日用量：路由器原生当日计数优先，否则用本地基线跟踪值
     public var dailyTotal: UInt64 {
         let nativeDaily = dailyRx &+ dailyTx
-        return nativeDaily > 0 ? nativeDaily : max(trackedDaily, sessionTotal)
+        return nativeDaily > 0 ? nativeDaily : trackedDaily
     }
 
     public var trafficUsageRatio: Double {
