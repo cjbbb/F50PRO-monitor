@@ -164,7 +164,7 @@ public struct SettingsView: View {
                     Spacer()
                     Picker("", selection: $tempDisplayMode) {
                         ForEach(MenuBarDisplayMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                            Text(mode == .speeds ? "双行速率" : mode.rawValue).tag(mode)
                         }
                     }
                     .pickerStyle(.menu)

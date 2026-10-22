@@ -15,6 +15,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Run tests
+        run: swift test
+
       - name: Build arm64 DMG
         run: ./build.sh --dmg
 
@@ -35,9 +38,9 @@ jobs:
 
           ## 更新内容
 
-          - 首次启动时引导配置设备地址和后台密码，并尝试发现局域网中的 F50。
-          - 自动从钥匙串读取已保存密码，执行需要登录的设备操作。
-          - 简化网络模式切换流程。
+          - 实时速率改为双行显示，上行红点、下行蓝点，方便同时查看。
+          - 缩小菜单栏图标与文字，精简流量、设备数等显示，减少占用宽度。
+          - 关闭面板弹出动画，点击后直接显示。
 
           SHA-256：
           \`\`\`text
@@ -46,6 +49,6 @@ jobs:
           EOF
 
           gh release create "v${version}" "$dmg_path" "${dmg_path}.sha256" \
-            --title "F50 Monitor v${version} — 首次设置与自动登录" \
+            --title "F50 Monitor v${version} — 双行速率与紧凑菜单栏" \
             --notes-file "$notes_path" \
             --verify-tag
