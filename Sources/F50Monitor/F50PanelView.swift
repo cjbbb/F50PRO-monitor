@@ -216,6 +216,8 @@ struct F50PanelView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var mobileDataErrorMessage: String?
+    @State private var networkModeErrorMessage: String?
+    @State private var networkModeRequiringLogin: F50NetworkMode?
 
     private var carrierLogoAssetName: String? {
         let carrier = fetcher.status.carrier.lowercased()
@@ -271,6 +273,11 @@ struct F50PanelView: View {
         .frame(width: 376)
         .fixedSize(horizontal: false, vertical: true)
         .background(F50Theme.panelBackground(for: colorScheme))
+        .sheet(item: $networkModeRequiringLogin) { mode in
+            NetworkModeLoginView(fetcher: fetcher, mode: mode) {
+                networkModeRequiringLogin = nil
+            }
+        }
     }
 
     // MARK: - Header View
@@ -464,6 +471,9 @@ struct F50PanelView: View {
 
             // Row 4: Mobile Data Toggle
             mobileDataRow
+
+            Divider().opacity(0.5)
+            networkModeRow
         }
         .padding(12)
         .background(cardBackgroundView)
@@ -473,7 +483,8 @@ struct F50PanelView: View {
     private var mobileDataRow: some View {
         let status = fetcher.status
         let isPasswordMissing = fetcher.password.isEmpty && !fetcher.isDemoMode
-        let isBusy = fetcher.isSwitchingMobileData || status.isMobileDataTransitioning
+        let isBusy = fetcher.isSwitchingMobileData || fetcher.isSwitchingNetworkMode
+            || fetcher.isAuthenticatingNetworkMode || status.isMobileDataTransitioning
         let isUnavailable = !status.isOnline || status.rawPppStatus.isEmpty
 
         return VStack(alignment: .leading, spacing: 4) {
@@ -501,14 +512,91 @@ struct F50PanelView: View {
                 .disabled(isBusy || isUnavailable || isPasswordMissing)
             }
 
-            if isPasswordMissing {
-                Text("请在设置中填写路由器管理密码")
-                    .font(.system(size: 10.5))
-                    .foregroundColor(.secondary)
-            } else if let mobileDataErrorMessage {
+            if let mobileDataErrorMessage {
                 Text(mobileDataErrorMessage)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundColor(F50Theme.red)
+            }
+        }
+    }
+
+    private var networkModeRow: some View {
+        let isBusy = fetcher.isSwitchingNetworkMode || fetcher.isSwitchingMobileData
+            || fetcher.isAuthenticatingNetworkMode || fetcher.status.isMobileDataTransitioning
+        let isUnavailable = !fetcher.isDemoMode &&
+            (!fetcher.status.isOnline || fetcher.networkMode == nil)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("网络模式")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if fetcher.isSwitchingNetworkMode {
+                    ProgressView().controlSize(.small)
+                    Text("切换中…")
+                        .foregroundColor(.secondary)
+                } else if let mode = fetcher.networkMode {
+                    Text(mode.title).foregroundColor(.secondary)
+                }
+            }
+            .font(.system(size: 12))
+
+            HStack(spacing: 6) {
+                networkModeButton(.lteOnly)
+                networkModeButton(.automatic)
+                Menu("更多") {
+                    ForEach([F50NetworkMode.sa, .nsa]) { mode in
+                        Button { setNetworkMode(mode) } label: {
+                            if fetcher.networkMode == mode {
+                                Label(mode.title, systemImage: "checkmark")
+                            } else {
+                                Text(mode.title)
+                            }
+                        }
+                    }
+                }
+                .fixedSize()
+            }
+            .controlSize(.small)
+            .disabled(isBusy || isUnavailable)
+
+            if let networkModeErrorMessage {
+                Text(networkModeErrorMessage)
+                    .font(.system(size: 12))
+                    .foregroundColor(F50Theme.red)
+            }
+        }
+    }
+
+    private func networkModeButton(_ mode: F50NetworkMode) -> some View {
+        Button { setNetworkMode(mode) } label: {
+            HStack(spacing: 4) {
+                if fetcher.networkMode == mode {
+                    Image(systemName: "checkmark")
+                }
+                Text(mode.title)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(fetcher.networkMode == mode ? F50Theme.blue : nil)
+        .accessibilityValue(fetcher.networkMode == mode ? "已选中" : "未选中")
+    }
+
+    private func setNetworkMode(_ mode: F50NetworkMode) {
+        networkModeErrorMessage = nil
+        guard mode != fetcher.networkMode else { return }
+        if fetcher.requiresNetworkModeLogin {
+            networkModeRequiringLogin = mode
+            return
+        }
+        Task {
+            do {
+                try await fetcher.setNetworkMode(mode)
+            } catch F50MobileDataError.loginFailed {
+                networkModeRequiringLogin = mode
+            } catch {
+                networkModeErrorMessage = error.localizedDescription
             }
         }
     }

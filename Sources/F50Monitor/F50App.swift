@@ -9,7 +9,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
     var fetcher: F50Fetcher!
-    private var initialSetupWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private let smsNotificationManager = SMSNotificationManager()
     
@@ -52,10 +51,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePopover(_:))
         }
 
-        if F50Configuration.needsInitialSetup {
-            showInitialSetup()
-        }
-        
         // 3. Observe Status & Settings Changes to Update Menu Bar Text
         Publishers.CombineLatest(fetcher.$status, fetcher.$displayMode)
             .receive(on: DispatchQueue.main)
@@ -82,21 +77,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         smsNotificationManager.requestAuthorizationIfNeeded()
-    }
-
-    private func showInitialSetup() {
-        let controller = NSHostingController(rootView: InitialSetupView(fetcher: fetcher) { [weak self] in
-            self?.initialSetupWindow?.close()
-            self?.initialSetupWindow = nil
-        })
-        let window = NSWindow(contentViewController: controller)
-        window.title = "F50 Monitor"
-        window.styleMask = [.titled]
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        initialSetupWindow = window
     }
 
     @objc func togglePopover(_ sender: AnyObject?) {

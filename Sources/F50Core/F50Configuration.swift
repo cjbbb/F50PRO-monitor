@@ -12,65 +12,9 @@ public enum F50Configuration {
     public static let displayModeDefaultsKey = "F50_DisplayMode"
     public static let trafficResetDayDefaultsKey = "F50_TrafficResetDay"
     public static let demoModeDefaultsKey = "F50_DemoMode"
-    public static let initialSetupCompletedDefaultsKey = "F50_InitialSetupCompleted"
 
     // 设备检测到的流量清零日 / 每日流量追踪
     public static let detectedTrafficResetDayDefaultsKey = "F50_DetectedTrafficResetDay"
-    /// 旧版本已保存过地址的用户无需再次经过首次设置。
-    public static var needsInitialSetup: Bool {
-        let defaults = UserDefaults.standard
-        return !defaults.bool(forKey: initialSetupCompletedDefaultsKey)
-            && defaults.object(forKey: baseURLDefaultsKey) == nil
-    }
-
-    /// 探测常见 F50 网关地址；仅请求设备公开的只读状态接口，不会发送或修改任何配置。
-    public static func discoverDeviceAddress() async -> String? {
-        let candidates = [
-            "192.168.0.1", "192.168.1.1", "192.168.8.1",
-            "192.168.10.1", "192.168.31.1", "192.168.100.1"
-        ]
-
-        return await withTaskGroup(of: String?.self, returning: String?.self) { group in
-            for host in candidates {
-                group.addTask {
-                    await probeF50(at: host) ? host : nil
-                }
-            }
-
-            for await result in group {
-                if let result {
-                    group.cancelAll()
-                    return result
-                }
-            }
-            return nil
-        }
-    }
-
-    private static func probeF50(at host: String) async -> Bool {
-        let paths = [
-            "http://\(host)/goform/goform_get_cmd_process?isTest=false&cmd=imei",
-            "http://\(host):2333/api/baseDeviceInfo"
-        ]
-
-        for path in paths {
-            guard let url = URL(string: path) else { continue }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 1.5
-
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode),
-                  let body = String(data: data, encoding: .utf8)?.lowercased()
-            else { continue }
-
-            if body.contains("imei") || body.contains("imsi") || body.contains("network_type") || body.contains("basedeviceinfo") {
-                return true
-            }
-        }
-        return false
-    }
-
     /// 提取用于设置界面显示和保存的主机名，忽略协议与端口。
     public static func displayAddress(from raw: String) -> String {
         let clean = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/ \t\n\r"))
