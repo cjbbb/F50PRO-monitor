@@ -217,7 +217,6 @@ public struct SettingsView: View {
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
-            fetcher.loadSavedPasswordIfNeeded()
             tempIP = F50Configuration.displayAddress(from: fetcher.baseURLString)
             tempPassword = fetcher.password
             tempInterval = fetcher.refreshInterval

@@ -43,14 +43,11 @@ public class F50Fetcher: ObservableObject {
         return URLSession(configuration: config, delegate: F50NetworkDelegate.shared, delegateQueue: nil)
     }
     private let session: URLSession
-    private let loadPassword: () -> String
     private let savePassword: (String) -> Void
-    private var isLoadingSavedPassword = false
 
     @Published public var status: F50Status = F50Status()
     @Published public private(set) var networkMode: F50NetworkMode?
     @Published public private(set) var isSwitchingNetworkMode = false
-    @Published public private(set) var isAuthenticatingNetworkMode = false
     @Published public var baseURLString: String {
         didSet {
             if baseURLString != oldValue {
@@ -67,7 +64,7 @@ public class F50Fetcher: ObservableObject {
 
     @Published public var password: String {
         didSet {
-            if password != oldValue, !isLoadingSavedPassword {
+            if password != oldValue {
                 savePassword(password)
                 if !isApplyingConfiguration { configurationDidChange() }
             }
@@ -189,12 +186,10 @@ public class F50Fetcher: ObservableObject {
     init(session: URLSession, automaticallyRefresh: Bool,
          loadPassword: @escaping () -> String, savePassword: @escaping (String) -> Void) {
         self.session = session
-        self.loadPassword = loadPassword
         self.savePassword = savePassword
         self.baseURLString = UserDefaults.standard.string(forKey: F50Configuration.baseURLDefaultsKey)
             ?? F50Configuration.defaultBaseURL
-        // 查看状态无需凭据；钥匙串也延迟到用户打开登录或设置时访问。
-        self.password = ""
+        self.password = loadPassword()
 
         let savedInterval = UserDefaults.standard.double(forKey: F50Configuration.refreshIntervalDefaultsKey)
         self.refreshInterval = savedInterval > 0 ? savedInterval : F50Configuration.defaultRefreshInterval
@@ -420,7 +415,7 @@ public class F50Fetcher: ObservableObject {
 
     /// 开关蜂窝数据（CONNECT_NETWORK / DISCONNECT_NETWORK）。UI 以轮询到的 ppp_status 为准，不做本地乐观更新。
     public func setMobileData(enabled: Bool) async throws {
-        guard !isSwitchingMobileData, !isSwitchingNetworkMode, !isAuthenticatingNetworkMode else {
+        guard !isSwitchingMobileData, !isSwitchingNetworkMode else {
             throw F50NetworkModeError.busy
         }
 
@@ -452,45 +447,9 @@ public class F50Fetcher: ObservableObject {
         }
     }
 
-    private var hasLoadedSavedPassword = false
-
-    public func loadSavedPasswordIfNeeded() {
-        guard !hasLoadedSavedPassword else { return }
-        hasLoadedSavedPassword = true
-        guard password.isEmpty else { return }
-        // 载入已有口令不等于更改连接配置，不清空模式、流量或现有会话。
-        isLoadingSavedPassword = true
-        defer { isLoadingSavedPassword = false }
-        password = loadPassword()
-    }
-
-    public var requiresNetworkModeLogin: Bool {
-        !isDemoMode && (sessionCookie == nil || isLoginRejected)
-    }
-
-    /// 只在用户提交网络模式登录表单时调用；状态轮询不主动登录。
-    public func authenticateForNetworkMode(password: String) async throws {
-        guard !isAuthenticatingNetworkMode, !isSwitchingNetworkMode, !isSwitchingMobileData else {
-            throw F50NetworkModeError.busy
-        }
-        guard !password.isEmpty else { throw F50MobileDataError.missingPassword }
-        isAuthenticatingNetworkMode = true
-        defer { isAuthenticatingNetworkMode = false }
-        self.password = password
-        let generation = requestGeneration
-        if requiresNetworkModeLogin {
-            let authenticated = await login(routerBaseURL: routerURLString, generation: generation)
-            guard generation == requestGeneration else { throw CancellationError() }
-            guard authenticated else { throw F50MobileDataError.loginFailed }
-        }
-        // 修改口令会清除设备状态，切换前重新读取模式。
-        await fetchDataAsync()
-        guard generation == requestGeneration else { throw CancellationError() }
-    }
-
     /// 通过原厂后台切换模式；回读配置确认，不把实际驻网类型当作配置。
     public func setNetworkMode(_ mode: F50NetworkMode) async throws {
-        guard !isSwitchingNetworkMode, !isSwitchingMobileData, !isAuthenticatingNetworkMode,
+        guard !isSwitchingNetworkMode, !isSwitchingMobileData,
               !status.isMobileDataTransitioning else { throw F50NetworkModeError.busy }
         if isDemoMode {
             networkMode = mode
@@ -813,7 +772,14 @@ public class F50Fetcher: ObservableObject {
 
         let dict: [String: Any]
         do {
-            dict = try await routerCommands(cmdList, routerBaseURL: routerBaseURL)
+            do {
+                dict = try await routerCommands(cmdList, routerBaseURL: routerBaseURL)
+            } catch RouterError.unauthorized(let message) {
+                guard await login(routerBaseURL: routerBaseURL, generation: generation) else {
+                    throw RouterError.unauthorized(message)
+                }
+                dict = try await routerCommands(cmdList, routerBaseURL: routerBaseURL)
+            }
         } catch {
             updateStatusFailed(error.localizedDescription, generation: generation)
             return
