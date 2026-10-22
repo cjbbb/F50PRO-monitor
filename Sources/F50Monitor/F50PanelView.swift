@@ -217,7 +217,6 @@ struct F50PanelView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var mobileDataErrorMessage: String?
     @State private var networkModeErrorMessage: String?
-    @State private var networkModeRequiringLogin: F50NetworkMode?
 
     private var carrierLogoAssetName: String? {
         let carrier = fetcher.status.carrier.lowercased()
@@ -273,11 +272,6 @@ struct F50PanelView: View {
         .frame(width: 376)
         .fixedSize(horizontal: false, vertical: true)
         .background(F50Theme.panelBackground(for: colorScheme))
-        .sheet(item: $networkModeRequiringLogin) { mode in
-            NetworkModeLoginView(fetcher: fetcher, mode: mode) {
-                networkModeRequiringLogin = nil
-            }
-        }
     }
 
     // MARK: - Header View
@@ -484,7 +478,7 @@ struct F50PanelView: View {
         let status = fetcher.status
         let isPasswordMissing = fetcher.password.isEmpty && !fetcher.isDemoMode
         let isBusy = fetcher.isSwitchingMobileData || fetcher.isSwitchingNetworkMode
-            || fetcher.isAuthenticatingNetworkMode || status.isMobileDataTransitioning
+            || status.isMobileDataTransitioning
         let isUnavailable = !status.isOnline || status.rawPppStatus.isEmpty
 
         return VStack(alignment: .leading, spacing: 4) {
@@ -522,7 +516,7 @@ struct F50PanelView: View {
 
     private var networkModeRow: some View {
         let isBusy = fetcher.isSwitchingNetworkMode || fetcher.isSwitchingMobileData
-            || fetcher.isAuthenticatingNetworkMode || fetcher.status.isMobileDataTransitioning
+            || fetcher.status.isMobileDataTransitioning
         let isUnavailable = !fetcher.isDemoMode &&
             (!fetcher.status.isOnline || fetcher.networkMode == nil)
 
@@ -586,15 +580,9 @@ struct F50PanelView: View {
     private func setNetworkMode(_ mode: F50NetworkMode) {
         networkModeErrorMessage = nil
         guard mode != fetcher.networkMode else { return }
-        if fetcher.requiresNetworkModeLogin {
-            networkModeRequiringLogin = mode
-            return
-        }
         Task {
             do {
                 try await fetcher.setNetworkMode(mode)
-            } catch F50MobileDataError.loginFailed {
-                networkModeRequiringLogin = mode
             } catch {
                 networkModeErrorMessage = error.localizedDescription
             }

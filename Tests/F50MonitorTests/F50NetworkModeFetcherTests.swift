@@ -102,16 +102,15 @@ final class F50NetworkModeFetcherTests: XCTestCase {
                           loadPassword: load, savePassword: save)
     }
 
-    func testAnonymousStartupDoesNotReadPasswordOrAttemptLogin() async {
+    func testStartupLoadsSavedPasswordAndUsesItForAutomaticLogin() async {
         let fixture = RouterFixture()
         fixture.rejectStatus = true
         var loads = 0
         let fetcher = makeFetcher(fixture, automaticallyRefresh: true, load: { loads += 1; return "saved" })
         await fetcher.fetchDataAsync()
-        XCTAssertEqual(loads, 0)
-        XCTAssertTrue(fetcher.password.isEmpty)
-        XCTAssertTrue(fetcher.requiresNetworkModeLogin)
-        XCTAssertTrue(fixture.postedForms.isEmpty)
+        XCTAssertEqual(loads, 1)
+        XCTAssertEqual(fetcher.password, "saved")
+        XCTAssertEqual(fixture.postedForms.compactMap { $0["goformId"] }, ["LOGIN"])
     }
 
     func testLoadingSavedPasswordPreservesModeAndTrafficWithoutSavingAgain() async {
@@ -121,8 +120,6 @@ final class F50NetworkModeFetcherTests: XCTestCase {
         let fetcher = makeFetcher(fixture, load: { loads += 1; return "saved" }, save: { _ in saves += 1 })
         await fetcher.fetchDataAsync()
         fetcher.status.monthlyRx = 12345
-        fetcher.loadSavedPasswordIfNeeded()
-        fetcher.loadSavedPasswordIfNeeded()
         XCTAssertEqual(fetcher.password, "saved")
         XCTAssertEqual(fetcher.networkMode, .automatic)
         XCTAssertEqual(fetcher.status.monthlyRx, 12345)
@@ -134,22 +131,22 @@ final class F50NetworkModeFetcherTests: XCTestCase {
     func testLoginThenSwitchConfirmsConfigurationAndReusesSession() async throws {
         let fixture = RouterFixture()
         let fetcher = makeFetcher(fixture)
-        try await fetcher.authenticateForNetworkMode(password: "fixture-password")
+        await fetcher.fetchDataAsync()
         try await fetcher.setNetworkMode(.lteOnly)
         XCTAssertEqual(fetcher.networkMode, .lteOnly)
         XCTAssertEqual(fixture.postedForms.compactMap { $0["goformId"] }, ["LOGIN", "SET_BEARER_PREFERENCE"])
         XCTAssertEqual(fixture.postedForms.last?["BearerPreference"], "Only_LTE")
         XCTAssertFalse(fetcher.isSwitchingNetworkMode)
-        XCTAssertFalse(fetcher.isAuthenticatingNetworkMode)
     }
 
-    func testRejectedPasswordIsNotRetriedByPollingOrSubmittingSamePassword() async {
+    func testRejectedPasswordIsNotRetriedByPollingOrSwitchAttempts() async {
         let fixture = RouterFixture()
         fixture.rejectLogin = true
         let fetcher = makeFetcher(fixture)
+        await fetcher.fetchDataAsync()
         for _ in 0..<2 {
             do {
-                try await fetcher.authenticateForNetworkMode(password: "rejected-password")
+                try await fetcher.setNetworkMode(.lteOnly)
                 XCTFail("Expected login failure")
             } catch F50MobileDataError.loginFailed {
                 // Expected: the second submission must not consume another login attempt.
@@ -159,25 +156,27 @@ final class F50NetworkModeFetcherTests: XCTestCase {
         XCTAssertEqual(fixture.postedForms.compactMap { $0["goformId"] }, ["LOGIN"])
     }
 
-    func testChangedPasswordCancelsLoginBeforePostingAndBlocksConcurrentDataToggle() async throws {
+    func testChangedPasswordCancelsSwitchLoginAndBlocksConcurrentDataToggle() async throws {
         let fixture = RouterFixture()
-        fixture.delayLockReply = true
         let fetcher = makeFetcher(fixture)
-        let login = Task { try await fetcher.authenticateForNetworkMode(password: "first-password") }
+        fetcher.password = "first-password"
+        await fetcher.fetchDataAsync()
+        fixture.delayLockReply = true
+        let switching = Task { try await fetcher.setNetworkMode(.lteOnly) }
         for _ in 0..<100 where fixture.lockReadCount == 0 {
             try await Task.sleep(nanoseconds: 5_000_000)
         }
-        XCTAssertTrue(fetcher.isAuthenticatingNetworkMode)
+        XCTAssertTrue(fetcher.isSwitchingNetworkMode)
         do {
             try await fetcher.setMobileData(enabled: false)
             XCTFail("Expected busy error")
         } catch F50NetworkModeError.busy {} catch { XCTFail("Unexpected error: \(error)") }
         fetcher.password = "changed-password"
         do {
-            try await login.value
+            try await switching.value
             XCTFail("Expected cancellation after configuration change")
         } catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
         XCTAssertTrue(fixture.postedForms.isEmpty)
-        XCTAssertFalse(fetcher.isAuthenticatingNetworkMode)
+        XCTAssertFalse(fetcher.isSwitchingNetworkMode)
     }
 }

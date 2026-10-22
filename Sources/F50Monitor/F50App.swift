@@ -5,10 +5,11 @@ import Combine
 
 @main
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
     var fetcher: F50Fetcher!
+    private var initialSetupWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private let smsNotificationManager = SMSNotificationManager()
     
@@ -27,12 +28,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
+        popover.delegate = self
         
         let hostingController = NSHostingController(
             rootView: F50PopoverView(fetcher: fetcher)
         )
         hostingController.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hostingController
+
+        // Resolve the initial SwiftUI layout before the first click opens the popover.
+        DispatchQueue.main.async { [weak hostingController] in
+            guard let hostingController else { return }
+            _ = hostingController.view.fittingSize
+            hostingController.view.layoutSubtreeIfNeeded()
+        }
 
         
         // 2. Setup Menu Bar StatusItem with monospaced font
@@ -49,6 +58,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = "F50 Monitor"
             button.target = self
             button.action = #selector(togglePopover(_:))
+        }
+
+        if F50Configuration.needsInitialSetup {
+            showInitialSetup()
         }
 
         // 3. Observe Status & Settings Changes to Update Menu Bar Text
@@ -79,17 +92,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         smsNotificationManager.requestAuthorizationIfNeeded()
     }
 
+    private func showInitialSetup() {
+        let controller = NSHostingController(rootView: InitialSetupView(fetcher: fetcher) { [weak self] in
+            self?.initialSetupWindow?.close()
+            self?.initialSetupWindow = nil
+        })
+        let window = NSWindow(contentViewController: controller)
+        window.title = "F50 Monitor"
+        window.styleMask = [.titled]
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        initialSetupWindow = window
+    }
+
     @objc func togglePopover(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
         
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            // Refresh data on opening popover
-            fetcher.fetchData()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    func popoverDidShow(_ notification: Notification) {
+        fetcher.fetchData()
     }
     
     private func updateMenuBarText(status: F50Status, mode: MenuBarDisplayMode) {
