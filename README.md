@@ -40,7 +40,7 @@
 
 ### 方式一：下载 dmg
 
-在 [Releases](https://github.com/machao2024/F50PRO-monitor/releases) 下载 `F50-Monitor-x.y.z-arm64.dmg`，打开后把 **F50 Monitor** 拖入「应用程序」。
+在 [Releases](https://github.com/cjbbb/F50PRO-monitor/releases) 下载 `F50-Monitor-x.y.z-arm64.dmg`，打开后把 **F50 Monitor** 拖入「应用程序」。
 
 应用未经 Apple 公证，首次打开会被 Gatekeeper 拦截，任选其一：
 
@@ -56,7 +56,7 @@
 需要 Xcode 命令行工具（`xcode-select --install`）。
 
 ```bash
-git clone https://github.com/machao2024/F50PRO-monitor.git
+git clone git@github.com:cjbbb/F50PRO-monitor.git
 cd F50PRO-monitor
 
 ./build.sh          # 编译 release、打包、安装到 /Applications 并启动
